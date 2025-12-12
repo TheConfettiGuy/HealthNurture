@@ -14,9 +14,7 @@ function initFirebaseAdmin() {
   if (admin.apps.length) return;
 
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!json) {
-    throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
-  }
+  if (!json) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
 
   const serviceAccount = JSON.parse(json);
 
@@ -76,6 +74,9 @@ Safety:
 
 type Provider = "twilio" | "ultramsg" | "unknown";
 
+type ChatRole = "system" | "user" | "assistant";
+type ChatMessage = { role: ChatRole; content: string };
+
 function containsArabic(text: string): boolean {
   return /[\u0600-\u06FF]/.test(text);
 }
@@ -116,6 +117,19 @@ function escapeXml(unsafe: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+}
+
+// Same “off-topic” guard as your chat route (keeps it consistent)
+function isClearlyOffTopic(text: string): boolean {
+  const lower = text.toLowerCase();
+  const bannedTopics = [
+    "cat","cats","dog","dogs","animal","animals","pet","pets",
+    "car","cars","engine","vehicle","motorcycle","bike",
+    "game","games","fortnite","minecraft","playstation","xbox","nintendo","movie","movies","series","anime",
+    "coding","programming","javascript","typescript","python","nextjs","react","computer","laptop","iphone","android",
+    "capital of","planet","galaxy","space","math","equation","physics","chemistry",
+  ];
+  return bannedTopics.some((w) => lower.includes(w));
 }
 
 /* =========================
@@ -159,15 +173,14 @@ const WELCOME =
 
 function toLatinDigits(input: string) {
   const map: Record<string, string> = {
-    "٠": "0","١": "1","٢": "2","٣": "3","٤": "4","٥": "5","٦": "6","٧": "7","٨": "8","٩": "9",
-    "۰": "0","۱": "1","۲": "2","۳": "3","۴": "4","۵": "5","۶": "6","۷": "7","۸": "8","۹": "9",
+    "٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9",
+    "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
   };
   return (input || "").replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
 }
 
 function parseChoice(input: string): number | null {
-  const t = toLatinDigits((input || "").trim())
-    .replace(/[^\d]/g, ""); // removes emojis like 5️⃣
+  const t = toLatinDigits((input || "").trim()).replace(/[^\d]/g, "");
   if (!t) return null;
   const n = parseInt(t, 10);
   return Number.isFinite(n) ? n : null;
@@ -207,23 +220,14 @@ function normalizeLocation(input: string): { value: string; label: string } | nu
   const byText: Record<string, { value: string; label: string }> = {
     "bekkaa": { value: "bekkaa", label: "Bekkaa/البقاع" },
     "البقاع": { value: "bekkaa", label: "Bekkaa/البقاع" },
-    "bekkaa/البقاع": { value: "bekkaa", label: "Bekkaa/البقاع" },
-
     "tripoli": { value: "tripoli", label: "Tripoli/طرابلس" },
     "طرابلس": { value: "tripoli", label: "Tripoli/طرابلس" },
-    "tripoli/طرابلس": { value: "tripoli", label: "Tripoli/طرابلس" },
-
     "akkar": { value: "akkar", label: "Akkar/عكار" },
     "عكار": { value: "akkar", label: "Akkar/عكار" },
-    "akkar/عكار": { value: "akkar", label: "Akkar/عكار" },
-
     "baalbek": { value: "baalbek", label: "Baalbek/بعلبك" },
     "بعلبك": { value: "baalbek", label: "Baalbek/بعلبك" },
-    "baalbek/بعلبك": { value: "baalbek", label: "Baalbek/بعلبك" },
-
     "beirut": { value: "beirut", label: "Beirut/بيروت" },
     "بيروت": { value: "beirut", label: "Beirut/بيروت" },
-    "beirut/بيروت": { value: "beirut", label: "Beirut/بيروت" },
   };
 
   return byText[t] ?? null;
@@ -242,21 +246,20 @@ function parseAge(input: string): number | null {
 ========================= */
 
 function extractDigitsPhone(value: string): string {
-  // "96170062123@c.us" -> "96170062123"
   return (value || "").replace(/[^\d]/g, "");
 }
 
 async function parseIncoming(req: NextRequest): Promise<{
   provider: Provider;
-  userId: string;        // digits only (doc id)
-  toRaw: string;         // original address for UltraMsg send (e.g. 9617...@c.us)
+  userId: string;        // digits only
+  toRaw: string;         // UltraMsg destination = fromRaw (9617...@c.us)
   text: string;
-  messageId: string;     // stable message id if possible
+  messageId: string;
   raw: any;
+  contentType: string;
 }> {
   const contentType = req.headers.get("content-type") || "";
 
-  // UltraMsg JSON
   if (contentType.includes("application/json")) {
     const raw = await req.json().catch(() => ({}));
     const msg = raw?.data ?? raw;
@@ -268,17 +271,9 @@ async function parseIncoming(req: NextRequest): Promise<{
     const messageId =
       (msg?.sid || msg?.id || raw?.hash || `${userId}_${Date.now()}`).toString();
 
-    return {
-      provider: "ultramsg",
-      userId,
-      toRaw: fromRaw,
-      text,
-      messageId,
-      raw,
-    };
+    return { provider: "ultramsg", userId, toRaw: fromRaw, text, messageId, raw, contentType };
   }
 
-  // Twilio x-www-form-urlencoded
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const textBody = await req.text();
     const raw = Object.fromEntries(new URLSearchParams(textBody));
@@ -292,10 +287,10 @@ async function parseIncoming(req: NextRequest): Promise<{
       text,
       messageId: (raw.MessageSid || raw.SmsMessageSid || `${Date.now()}`).toString(),
       raw,
+      contentType,
     };
   }
 
-  // multipart/form-data
   if (contentType.includes("multipart/form-data")) {
     const fd = await req.formData();
     const rawObj: Record<string, any> = {};
@@ -311,10 +306,11 @@ async function parseIncoming(req: NextRequest): Promise<{
       text,
       messageId: (rawObj.MessageSid || rawObj.SmsMessageSid || `${Date.now()}`).toString(),
       raw: rawObj,
+      contentType,
     };
   }
 
-  return { provider: "unknown", userId: "", toRaw: "", text: "", messageId: "", raw: {} };
+  return { provider: "unknown", userId: "", toRaw: "", text: "", messageId: "", raw: {}, contentType };
 }
 
 /* =========================
@@ -346,17 +342,22 @@ async function sendViaUltramsg(to: string, message: string) {
 }
 
 /* =========================
-   Firestore: One doc per user in "users"
-   Array messages with upsert by messageId
+   Firestore: ONE collection "users"
+   ONE doc per userId
+   messages[] array updated + sorted
 ========================= */
 
-type MessageItem = {
+type MessageKind = "chat" | "onboarding" | "system";
+type StoredMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
   ts: number;
   provider: Provider;
+  kind: MessageKind;
 };
+
+const HISTORY_LIMIT = 24; // last N chat messages to send to LLM
 
 async function ensureUserDoc(userId: string) {
   const firestore = db();
@@ -394,7 +395,8 @@ async function updateProfile(userId: string, patch: Record<string, any>) {
   );
 }
 
-async function upsertMessageArray(userId: string, message: MessageItem) {
+// Upsert by id, keep chronological, cap size
+async function upsertMessageArray(userId: string, message: StoredMessage) {
   const firestore = db();
   const ref = firestore.collection("users").doc(userId);
 
@@ -403,10 +405,9 @@ async function upsertMessageArray(userId: string, message: MessageItem) {
     const now = admin.firestore.FieldValue.serverTimestamp();
 
     const data = snap.exists ? (snap.data() || {}) : {};
-    const messages: MessageItem[] = Array.isArray(data.messages) ? data.messages : [];
+    const messages: StoredMessage[] = Array.isArray(data.messages) ? data.messages : [];
     const profile = data.profile || {};
 
-    // If doc doesn't exist, create base structure
     if (!snap.exists) {
       tx.set(ref, {
         profile: {
@@ -422,21 +423,31 @@ async function upsertMessageArray(userId: string, message: MessageItem) {
     }
 
     const idx = messages.findIndex((m) => m?.id === message.id);
-
     if (idx >= 0) {
-      // Update existing message object
-      messages[idx] = {
-        ...messages[idx],
-        ...message,
-        ts: messages[idx].ts ?? message.ts,
-      };
+      messages[idx] = { ...messages[idx], ...message };
     } else {
-      // Append
       messages.push(message);
     }
 
-    tx.set(ref, { messages, updatedAt: now }, { merge: true });
+    // Sort by ts then cap (keep most recent)
+    messages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const capped = messages.length > 500 ? messages.slice(-500) : messages;
+
+    tx.set(ref, { messages: capped, updatedAt: now }, { merge: true });
   });
+}
+
+function buildHistoryForLLM(allMessages: StoredMessage[]): ChatMessage[] {
+  // only "chat" messages (NOT onboarding prompts), and only non-empty
+  const chatMsgs = (allMessages || [])
+    .filter((m) => m && m.kind === "chat" && typeof m.text === "string" && m.text.trim().length > 0)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .slice(-HISTORY_LIMIT);
+
+  return chatMsgs.map((m) => ({
+    role: m.role,
+    content: m.text,
+  }));
 }
 
 /* =========================
@@ -447,9 +458,10 @@ export async function POST(req: NextRequest) {
   try {
     const { provider, userId, toRaw, text, messageId, raw } = await parseIncoming(req);
 
+    // Always return 200 to avoid provider retry storms
     if (!userId) return NextResponse.json({ ok: true });
 
-    // Ignore non-chat UltraMsg events
+    // UltraMsg: ignore non-chat events
     const ultraType = raw?.data?.type;
     if (provider === "ultramsg" && ultraType && ultraType !== "chat") {
       return NextResponse.json({ ok: true });
@@ -457,13 +469,16 @@ export async function POST(req: NextRequest) {
 
     await ensureUserDoc(userId);
 
-    // Save inbound message (upsert)
+    // Save inbound user message (as chat if onboarding done, otherwise kind onboarding still ok)
+    // We'll decide kind after we read profile, but we can temporarily store as chat then adjust — simpler:
+    // We'll store inbound as "chat" ALWAYS (so the user's actual text is preserved).
     await upsertMessageArray(userId, {
       id: messageId,
       role: "user",
       text: text || "",
       ts: Date.now(),
       provider,
+      kind: "chat",
     });
 
     // Load user doc
@@ -472,12 +487,14 @@ export async function POST(req: NextRequest) {
     const snap = await userRef.get();
     const data = snap.data() || {};
     const profile = data.profile || {};
-    const step = profile.onboardingStep || "gender";
+    const step: string = profile.onboardingStep || "gender";
+    const allMessages: StoredMessage[] = Array.isArray(data.messages) ? data.messages : [];
 
     let reply = "";
 
     // Block chatting until onboarding done
     if (step !== "done") {
+      // Mark outbound as onboarding kind (keeps LLM history clean)
       if (step === "gender") {
         const g = normalizeGender(text);
         if (!g) {
@@ -491,9 +508,6 @@ export async function POST(req: NextRequest) {
           reply = Q2;
         }
       } else if (step === "location") {
-        // Debug line (optional): helps if something odd happens again
-        console.log("Q2 raw text:", JSON.stringify(text));
-
         const loc = normalizeLocation(text);
         if (!loc) {
           reply = Q2;
@@ -517,21 +531,50 @@ export async function POST(req: NextRequest) {
           reply = WELCOME;
         }
       } else {
-        // unknown step -> restart
         await updateProfile(userId, { onboardingStep: "gender" });
         reply = Q1;
       }
-    } else {
-      // Normal GPT chat
-      const isArabic = containsArabic(text);
-      const wantsDetail = userRequestedDetails(text);
 
-      const LANGUAGE_ENFORCER = {
-        role: "system" as const,
+      const assistantMsgId = `assistant_${messageId}`;
+      await upsertMessageArray(userId, {
+        id: assistantMsgId,
+        role: "assistant",
+        text: reply,
+        ts: Date.now(),
+        provider,
+        kind: "onboarding",
+      });
+
+      if (provider === "twilio") {
+        const twiml = `<Response><Message>${escapeXml(reply)}</Message></Response>`;
+        return new NextResponse(twiml, { status: 200, headers: { "Content-Type": "text/xml" } });
+      }
+      if (provider === "ultramsg") {
+        if (toRaw) await sendViaUltramsg(toRaw, reply);
+        return NextResponse.json({ ok: true });
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    // ===== Normal GPT chat (WITH HISTORY) =====
+
+    const isArabic = containsArabic(text);
+    const wantsDetail = userRequestedDetails(text);
+
+    // Hard off-topic guard
+    if (isClearlyOffTopic(text)) {
+      reply = isArabic
+        ? "أنا هنا لمساعدتك في أمور البلوغ والصحة الجنسية والمشاعر والعلاقات، لذلك لا يمكنني الإجابة على هذا السؤال."
+        : "I am here to help with puberty, sexual and reproductive health, emotions and relationships, so I cannot answer that question.";
+    } else {
+      const LANGUAGE_ENFORCER: ChatMessage = {
+        role: "system",
         content: isArabic
           ? "Answer only in Arabic. Use simple, clear Modern Standard Arabic. Do not include English unless the user includes it."
           : "Answer only in English. Use simple, clear sentences. Do not mix languages unless the user mixes them.",
       };
+
+      const history = buildHistoryForLLM(allMessages);
 
       const model = process.env.OPENAI_MODEL_CHAT || "gpt-4o-mini";
 
@@ -539,21 +582,23 @@ export async function POST(req: NextRequest) {
         model,
         temperature: 0.5,
         messages: [
-          { role: "system" as const, content: SYSTEM_PROMPT },
+          { role: "system", content: SYSTEM_PROMPT },
           LANGUAGE_ENFORCER,
-          { role: "user" as const, content: text },
+          ...history,
+          // Ensure the current user message is definitely last (even if history already includes it)
+          { role: "user", content: text },
         ],
       });
 
       reply =
         completion.choices[0]?.message?.content?.trim() ||
-        "Sorry, something went wrong while answering your question.";
+        (isArabic ? "عذراً، حدث خطأ مؤقت." : "Sorry, a temporary error occurred.");
 
       reply = reply.replace(/[*#]/g, "");
       if (!wantsDetail) reply = shortenToSentences(reply, 4);
     }
 
-    // Save outbound message (always, in SAME users doc)
+    // Save assistant reply as chat kind
     const assistantMsgId = `assistant_${messageId}`;
     await upsertMessageArray(userId, {
       id: assistantMsgId,
@@ -561,6 +606,7 @@ export async function POST(req: NextRequest) {
       text: reply,
       ts: Date.now(),
       provider,
+      kind: "chat",
     });
 
     // Respond per provider
@@ -573,7 +619,6 @@ export async function POST(req: NextRequest) {
     }
 
     if (provider === "ultramsg") {
-      // UltraMsg requires sending via API
       if (toRaw) await sendViaUltramsg(toRaw, reply);
       return NextResponse.json({ ok: true });
     }
@@ -581,11 +626,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("WhatsApp webhook error:", err);
-    // Always 200 to avoid retries storms
     const xml = `<Response><Message>Temporary error. Please try again later.</Message></Response>`;
-    return new NextResponse(xml, {
-      status: 200,
-      headers: { "Content-Type": "text/xml" },
-    });
+    return new NextResponse(xml, { status: 200, headers: { "Content-Type": "text/xml" } });
   }
 }
