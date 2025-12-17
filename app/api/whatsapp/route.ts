@@ -7,23 +7,20 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /* =========================
-   Firebase Admin (server)
+   Firebase Admin
 ========================= */
 
 function initFirebaseAdmin() {
   if (admin.apps.length) return;
 
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!json) {
-    throw new Error(
-      "Missing FIREBASE_SERVICE_ACCOUNT_JSON (Firebase service account JSON as a single-line env var)"
-    );
-  }
+  if (!json) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
 
   const serviceAccount = JSON.parse(json);
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET, // required for TEMP upload
   });
 }
 
@@ -37,7 +34,7 @@ function db() {
 ========================= */
 
 export async function GET() {
-  return new NextResponse("WhatsApp webhook is live ✅", {
+  return new NextResponse("WhatsApp webhook is live ✅ (UltraMsg)", {
     status: 200,
     headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
@@ -57,15 +54,15 @@ Main focus:
 - You may answer small general medical questions briefly.
 
 Behavior:
-- If the user asks about something outside this area (for example cats, games, cars, coding, etc.), do NOT answer their question. Reply with one short sentence such as "I'm mainly here to help with puberty, sexual health, and emotions, so I can't answer that." Then stop.
-- Greetings are allowed. If the user says hi/hello/how are you, reply politely and invite a health question.
+- If the user asks about something outside this area (for example cats, games, cars, coding, etc.), do NOT answer their question.
+  Reply with one short sentence such as "I'm mainly here to help with puberty, sexual health, and emotions, so I can't answer that." Then stop.
+- HOWEVER: normal greetings and small talk like "hi", "hello", "how are you" are allowed. Reply politely then guide them back to allowed topics.
 - Do not use markdown, lists, bullets, * or #.
-- Keep responses short to medium by default (two to ten sentences) unless the question needs details or it is specific.
-- Give a longer or more detailed answer only if the user clearly asks for more detail.
+- Keep responses short to medium by default unless the user clearly asks for more detail.
 - Don't answer questions related to LGBTQ+.
-- If asked "is this a test?", say you're working fine.
-- Don't include religious answers, keep it factual and scientific if the question contains something religious.
-- Use the same language the user uses. If the user writes in Arabic, answer only in Arabic. If the user writes in English, answer only in English. Do not mix languages unless the user mixes them.
+- If asked "this is a test" say you are working fine.
+- No religious answers; use facts and science.
+- Use the same language the user uses. Do not mix languages unless the user mixes them.
 
 Medication rules:
 - Never give names of medications, pills, drugs, or antibiotics.
@@ -77,15 +74,14 @@ Safety:
 - Always stay supportive, kind, and non-judgmental, like a school counselor or health educator.
 `;
 
-type Provider = "twilio" | "ultramsg" | "unknown";
-type Role = "user" | "assistant";
+type Provider = "ultramsg";
 
 function containsArabic(text: string): boolean {
-  return /[\u0600-\u06FF]/.test(text);
+  return /[\u0600-\u06FF]/.test(text || "");
 }
 
 function userRequestedDetails(text: string): boolean {
-  const lower = text.toLowerCase();
+  const lower = (text || "").toLowerCase();
   const keywords = [
     "details",
     "more detail",
@@ -104,7 +100,7 @@ function userRequestedDetails(text: string): boolean {
 }
 
 function shortenToSentences(text: string, maxSentences: number): string {
-  const parts = text
+  const parts = (text || "")
     .split(/(?<=[.!؟])\s+/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
@@ -113,108 +109,26 @@ function shortenToSentences(text: string, maxSentences: number): string {
   return parts.slice(0, maxSentences).join(" ");
 }
 
-function escapeXml(unsafe: string): string {
-  return unsafe
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-/* =========================
-   Greetings + Off-topic guard
-========================= */
-
 function isGreeting(text: string): boolean {
-  const t = (text || "").toLowerCase().trim();
+  const t = (text || "").trim().toLowerCase();
   if (!t) return false;
 
   const greetings = [
-    "hi",
-    "hello",
-    "hey",
-    "hey there",
-    "how are you",
-    "how r u",
-    "howru",
-    "good morning",
-    "good evening",
-    "good afternoon",
-    "مرحبا",
-    "أهلا",
-    "اهلا",
-    "هلا",
-    "كيفك",
-    "كيف حالك",
-    "صباح الخير",
-    "مساء الخير",
+    "hi", "hello", "hey", "how are you", "how r u", "hru", "good morning", "good evening",
+    "مرحبا", "مرحباً", "اهلا", "أهلا", "هلا", "هاي", "كيفك", "كيف حالك", "شو الأخبار", "صباح الخير", "مساء الخير",
   ];
 
-  return greetings.some((g) => t === g || t.startsWith(g));
+  return greetings.some((g) => t === g || t.includes(g));
 }
 
-// Keep this for real off-topic ONLY. Do NOT include greetings here.
-function isClearlyOffTopic(text: string): boolean {
-  const lower = (text || "").toLowerCase();
-
-  const bannedTopics = [
-    // animals / pets
-    "cat",
-    "cats",
-    "dog",
-    "dogs",
-    "animal",
-    "animals",
-    "pet",
-    "pets",
-    // vehicles
-    "car",
-    "cars",
-    "engine",
-    "vehicle",
-    "motorcycle",
-    "bike",
-    // games / entertainment
-    "game",
-    "games",
-    "fortnite",
-    "minecraft",
-    "playstation",
-    "xbox",
-    "nintendo",
-    "movie",
-    "movies",
-    "series",
-    "anime",
-    // coding / tech
-    "coding",
-    "programming",
-    "javascript",
-    "typescript",
-    "python",
-    "nextjs",
-    "react",
-    "computer",
-    "laptop",
-    "iphone",
-    "android",
-    // general knowledge
-    "capital of",
-    "planet",
-    "galaxy",
-    "space",
-    "math",
-    "equation",
-    "physics",
-    "chemistry",
-  ];
-
-  return bannedTopics.some((w) => lower.includes(w));
+function greetingReply(isArabic: boolean): string {
+  return isArabic
+    ? "أهلاً! أنا تمام. كيف فيني ساعدك اليوم؟ اسألني عن البلوغ، الصحة الجنسية والإنجابية، أو المشاعر والعلاقات."
+    : "Hey! I’m doing well — thanks for asking. How can I help you today? You can ask me about puberty, sexual and reproductive health, emotions, or relationships.";
 }
 
 /* =========================
-   Questions (Bilingual + Numbered)
+   Onboarding Questions (Bilingual + Numbered)
 ========================= */
 
 const Q1 = `Question 1/3: What is your gender?
@@ -249,36 +163,17 @@ const WELCOME =
   `أهلاً بك في هيلث نيرتشر، يمكنك سؤالي عن البلوغ، الصحة الجنسية، والمشاعر والعلاقات.`;
 
 /* =========================
-   Number parsing (accept "٥" etc.)
+   Number parsing (Arabic digits)
 ========================= */
 
 function toLatinDigits(input: string) {
   const map: Record<string, string> = {
-    "٠": "0",
-    "١": "1",
-    "٢": "2",
-    "٣": "3",
-    "٤": "4",
-    "٥": "5",
-    "٦": "6",
-    "٧": "7",
-    "٨": "8",
-    "٩": "9",
-    "۰": "0",
-    "۱": "1",
-    "۲": "2",
-    "۳": "3",
-    "۴": "4",
-    "۵": "5",
-    "۶": "6",
-    "۷": "7",
-    "۸": "8",
-    "۹": "9",
+    "٠": "0","١": "1","٢": "2","٣": "3","٤": "4","٥": "5","٦": "6","٧": "7","٨": "8","٩": "9",
+    "۰": "0","۱": "1","۲": "2","۳": "3","۴": "4","۵": "5","۶": "6","۷": "7","۸": "8","۹": "9",
   };
   return (input || "").replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
 }
 
-// Accept 5, "5️⃣", " 5 ", "option 5", etc.
 function parseChoice(input: string): number | null {
   const t = toLatinDigits((input || "").trim()).replace(/[^\d]/g, "");
   if (!t) return null;
@@ -286,28 +181,16 @@ function parseChoice(input: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/* =========================
-   Normalization (store real answers)
-========================= */
-
-function normalizeGender(
-  input: string
-): { value: "male" | "female"; label: string } | null {
+function normalizeGender(input: string): { value: "male" | "female"; label: string } | null {
   const t = toLatinDigits(input).trim().toLowerCase();
   const n = parseChoice(t);
 
-  if (n === 1 || t === "female" || t === "أنثى" || t === "female/أنثى") {
-    return { value: "female", label: "Female/أنثى" };
-  }
-  if (n === 2 || t === "male" || t === "ذكر" || t === "male/ذكر") {
-    return { value: "male", label: "Male/ذكر" };
-  }
+  if (n === 1 || t === "female" || t === "أنثى") return { value: "female", label: "Female/أنثى" };
+  if (n === 2 || t === "male" || t === "ذكر") return { value: "male", label: "Male/ذكر" };
   return null;
 }
 
-function normalizeLocation(
-  input: string
-): { value: string; label: string } | null {
+function normalizeLocation(input: string): { value: string; label: string } | null {
   const t = toLatinDigits(input).trim().toLowerCase();
   const n = parseChoice(t);
 
@@ -318,29 +201,14 @@ function normalizeLocation(
     4: { value: "baalbek", label: "Baalbek/بعلبك" },
     5: { value: "beirut", label: "Beirut/بيروت" },
   };
-
   if (n && byNumber[n]) return byNumber[n];
 
   const byText: Record<string, { value: string; label: string }> = {
-    "bekkaa": { value: "bekkaa", label: "Bekkaa/البقاع" },
-    "البقاع": { value: "bekkaa", label: "Bekkaa/البقاع" },
-    "bekkaa/البقاع": { value: "bekkaa", label: "Bekkaa/البقاع" },
-
-    "tripoli": { value: "tripoli", label: "Tripoli/طرابلس" },
-    "طرابلس": { value: "tripoli", label: "Tripoli/طرابلس" },
-    "tripoli/طرابلس": { value: "tripoli", label: "Tripoli/طرابلس" },
-
-    "akkar": { value: "akkar", label: "Akkar/عكار" },
-    "عكار": { value: "akkar", label: "Akkar/عكار" },
-    "akkar/عكار": { value: "akkar", label: "Akkar/عكار" },
-
-    "baalbek": { value: "baalbek", label: "Baalbek/بعلبك" },
-    "بعلبك": { value: "baalbek", label: "Baalbek/بعلبك" },
-    "baalbek/بعلبك": { value: "baalbek", label: "Baalbek/بعلبك" },
-
-    "beirut": { value: "beirut", label: "Beirut/بيروت" },
-    "بيروت": { value: "beirut", label: "Beirut/بيروت" },
-    "beirut/بيروت": { value: "beirut", label: "Beirut/بيروت" },
+    "bekkaa": byNumber[1], "البقاع": byNumber[1],
+    "tripoli": byNumber[2], "طرابلس": byNumber[2],
+    "akkar": byNumber[3], "عكار": byNumber[3],
+    "baalbek": byNumber[4], "بعلبك": byNumber[4],
+    "beirut": byNumber[5], "بيروت": byNumber[5],
   };
 
   return byText[t] ?? null;
@@ -355,101 +223,69 @@ function parseAge(input: string): number | null {
 }
 
 /* =========================
-   Provider parsing (UltraMsg + Twilio)
+   UltraMsg: parse webhook payload
 ========================= */
 
 function extractDigitsPhone(value: string): string {
-  // "96170062123@c.us" -> "96170062123"
   return (value || "").replace(/[^\d]/g, "");
 }
 
-async function parseIncoming(req: NextRequest): Promise<{
+async function parseUltraMsgIncoming(req: NextRequest): Promise<{
   provider: Provider;
-  userId: string; // digits only (Firestore doc id)
-  toRaw: string; // UltraMsg "from" (e.g. 9617...@c.us) for sending replies
+  userId: string;        // digits only (doc id)
+  toRaw: string;         // 9617...@c.us
   text: string;
   messageId: string;
   raw: any;
+  hasVoice: boolean;
+  voiceUrl?: string;
 }> {
-  const contentType = req.headers.get("content-type") || "";
+  const raw = await req.json().catch(() => ({}));
 
-  // UltraMsg JSON webhook
-  if (contentType.includes("application/json")) {
-    const raw = await req.json().catch(() => ({}));
+  // UltraMsg commonly: { event_type, data: {...} }
+  const data = raw?.data ?? raw;
 
-    // UltraMsg webhook format you showed:
-    // { event_type, instanceId, hash, data: { from, body, sid, ... } }
-    const msg = raw?.data ?? raw;
+  const text = (data?.body || "").toString().trim();
+  const fromRaw = (data?.from || "").toString(); // 9617...@c.us
+  const userId = extractDigitsPhone(fromRaw);
 
-    const text = (msg?.body || "").toString().trim();
-    const fromRaw = (msg?.from || "").toString(); // 9617...@c.us
-    const userId = extractDigitsPhone(fromRaw);
+  const messageId =
+    (data?.sid || data?.id || raw?.hash || `${userId}_${Date.now()}`).toString();
 
-    const messageId = (
-      msg?.sid ||
-      msg?.id ||
-      raw?.hash ||
-      `${userId}_${Date.now()}`
-    ).toString();
+  // Voice notes: UltraMsg varies by plan/settings.
+  // Try common patterns:
+  const type = (data?.type || "").toString().toLowerCase(); // "chat", "audio", "ptt", "voice"
+  const voiceUrl =
+    (data?.media || data?.mediaUrl || data?.url || raw?.media || raw?.mediaUrl) as string | undefined;
 
-    return { provider: "ultramsg", userId, toRaw: fromRaw, text, messageId, raw };
-  }
+  const hasVoice = Boolean(voiceUrl) || ["audio", "voice", "ptt"].includes(type);
 
-  // Twilio x-www-form-urlencoded
-  if (contentType.includes("application/x-www-form-urlencoded")) {
-    const textBody = await req.text();
-    const raw = Object.fromEntries(new URLSearchParams(textBody));
-    const from = (raw.From || raw.from || "").toString();
-    const text = (raw.Body || raw.body || "").toString().trim();
-
-    return {
-      provider: "twilio",
-      userId: extractDigitsPhone(from),
-      toRaw: from,
-      text,
-      messageId: (raw.MessageSid || raw.SmsMessageSid || `${Date.now()}`).toString(),
-      raw,
-    };
-  }
-
-  // Twilio multipart/form-data
-  if (contentType.includes("multipart/form-data")) {
-    const fd = await req.formData();
-    const rawObj: Record<string, any> = {};
-    fd.forEach((v, k) => (rawObj[k] = v.toString()));
-
-    const from = (rawObj.From || rawObj.from || "").toString();
-    const text = (rawObj.Body || rawObj.body || "").toString().trim();
-
-    return {
-      provider: "twilio",
-      userId: extractDigitsPhone(from),
-      toRaw: from,
-      text,
-      messageId: (rawObj.MessageSid || rawObj.SmsMessageSid || `${Date.now()}`).toString(),
-      raw: rawObj,
-    };
-  }
-
-  return { provider: "unknown", userId: "", toRaw: "", text: "", messageId: "", raw: {} };
+  return {
+    provider: "ultramsg",
+    userId,
+    toRaw: fromRaw,
+    text,
+    messageId,
+    raw,
+    hasVoice,
+    voiceUrl: voiceUrl ? String(voiceUrl) : undefined,
+  };
 }
 
 /* =========================
-   UltraMsg send
+   UltraMsg: send text + voice
 ========================= */
 
-async function sendViaUltramsg(to: string, message: string) {
+async function sendViaUltramsgText(to: string, message: string) {
   const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
   const token = process.env.ULTRAMSG_TOKEN;
-  if (!instanceId || !token) {
-    throw new Error("Missing ULTRAMSG_INSTANCE_ID / ULTRAMSG_TOKEN");
-  }
+  if (!instanceId || !token) throw new Error("Missing ULTRAMSG_INSTANCE_ID/ULTRAMSG_TOKEN");
 
   const url = `https://api.ultramsg.com/${instanceId}/messages/chat`;
 
   const body = new URLSearchParams({
     token,
-    to, // must be like 9617...@c.us
+    to,
     body: message,
   });
 
@@ -460,19 +296,40 @@ async function sendViaUltramsg(to: string, message: string) {
   });
 
   const txt = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`UltraMsg send failed: ${res.status} ${txt}`);
-  return txt;
+  if (!res.ok) throw new Error(`UltraMsg text send failed: ${res.status} ${txt}`);
+}
+
+async function sendViaUltramsgVoice(to: string, audioUrl: string) {
+  const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
+  const token = process.env.ULTRAMSG_TOKEN;
+  if (!instanceId || !token) throw new Error("Missing ULTRAMSG_INSTANCE_ID/ULTRAMSG_TOKEN");
+
+  const url = `https://api.ultramsg.com/${instanceId}/messages/voice`;
+
+  const body = new URLSearchParams({
+    token,
+    to,
+    audio: audioUrl, // must be a URL UltraMsg can fetch
+  });
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+
+  const txt = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`UltraMsg voice send failed: ${res.status} ${txt}`);
 }
 
 /* =========================
-   Firestore: ONE collection "users"
-   One doc per userId (phone digits)
-   messages: array that upserts by messageId
+   Firestore: one collection "users"
+   One doc per user, messages array
 ========================= */
 
 type MessageItem = {
-  id: string; // messageId
-  role: Role;
+  id: string;
+  role: "user" | "assistant";
   text: string;
   ts: number;
   provider: Provider;
@@ -488,7 +345,7 @@ async function ensureUserDoc(userId: string) {
     await ref.set({
       profile: {
         userId,
-        onboardingStep: "gender", // gender -> location -> age -> done
+        onboardingStep: "gender",
         createdAt: now,
         updatedAt: now,
       },
@@ -502,7 +359,6 @@ async function updateProfile(userId: string, patch: Record<string, any>) {
   const firestore = db();
   const ref = firestore.collection("users").doc(userId);
   const now = admin.firestore.FieldValue.serverTimestamp();
-
   await ref.set(
     {
       profile: {
@@ -515,7 +371,6 @@ async function updateProfile(userId: string, patch: Record<string, any>) {
   );
 }
 
-// Upsert into messages array by id (keeps one array, one doc)
 async function upsertMessageArray(userId: string, message: MessageItem) {
   const firestore = db();
   const ref = firestore.collection("users").doc(userId);
@@ -543,80 +398,156 @@ async function upsertMessageArray(userId: string, message: MessageItem) {
     }
 
     const idx = messages.findIndex((m) => m?.id === message.id);
-    if (idx >= 0) {
-      messages[idx] = { ...messages[idx], ...message };
-    } else {
-      messages.push(message);
-    }
+    if (idx >= 0) messages[idx] = { ...messages[idx], ...message, ts: messages[idx].ts ?? message.ts };
+    else messages.push(message);
 
-    // Ensure chronological order by ts (stable)
     messages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-
     tx.set(ref, { messages, updatedAt: now }, { merge: true });
   });
 }
 
-/* =========================
-   Build GPT history from Firestore
-   (makes WhatsApp bot "remember" context)
-========================= */
-
-function buildHistoryForLLM(messages: MessageItem[], limitPairs = 8) {
-  // Keep last N user/assistant turns (pairs -> about 16 messages max)
-  const tail = (messages || []).slice(-limitPairs * 2);
-
-  return tail
-    .filter((m) => m && (m.role === "user" || m.role === "assistant") && m.text)
-    .map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.text,
-    }));
+function getRecentHistoryForLLM(all: MessageItem[], limit: number) {
+  return (all || [])
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.text === "string")
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .slice(-limit)
+    .map((m) => ({ role: m.role as "user" | "assistant", content: m.text }));
 }
 
 /* =========================
-   POST Handler
+   Voice: Transcribe + TTS (TEMP upload then delete)
+   Firestore stores only transcript text (NOT audio)
+========================= */
+
+async function transcribeAudioFromUrl(url: string) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch voice: ${res.status}`);
+
+  const buf = Buffer.from(await res.arrayBuffer());
+  const file = new File([buf], "voice-note", { type: "application/octet-stream" });
+
+  const tr: any = await openai.audio.transcriptions.create({
+    model: "gpt-4o-mini-transcribe",
+    file,
+    response_format: "text",
+  });
+
+  return (tr?.text || "").toString().trim();
+}
+
+function pickVoice(isArabic: boolean): string {
+  return isArabic ? "alloy" : "alloy";
+}
+
+async function ttsToMp3Buffer(text: string, voice: string) {
+  const ttsModel = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
+  const audio = await openai.audio.speech.create({
+    model: ttsModel,
+    voice,
+    input: text,
+  });
+  return Buffer.from(await audio.arrayBuffer());
+}
+
+async function uploadTempMp3GetSignedUrlAndDelete(
+  userId: string,
+  messageId: string,
+  mp3: Buffer
+) {
+  initFirebaseAdmin();
+
+  const bucket = admin.storage().bucket();
+  if (!bucket) throw new Error("Missing Firebase storageBucket (FIREBASE_STORAGE_BUCKET)");
+
+  const path = `tmp_wa_tts/${userId}/${messageId}.mp3`;
+  const file = bucket.file(path);
+
+  await file.save(mp3, {
+    contentType: "audio/mpeg",
+    resumable: false,
+    metadata: { cacheControl: "no-store" },
+  });
+
+  const [signedUrl] = await file.getSignedUrl({
+    action: "read",
+    expires: Date.now() + 1000 * 60 * 5, // 5 minutes
+  });
+
+  // Return BOTH url + deleter
+  return {
+    signedUrl,
+    cleanup: async () => {
+      try {
+        await file.delete({ ignoreNotFound: true });
+      } catch {}
+    },
+  };
+}
+
+/* =========================
+   POST Handler (UltraMsg only)
 ========================= */
 
 export async function POST(req: NextRequest) {
   try {
-    const { provider, userId, toRaw, text, messageId, raw } = await parseIncoming(req);
+    const { provider, userId, toRaw, text, messageId, raw, hasVoice, voiceUrl } =
+      await parseUltraMsgIncoming(req);
 
-    // Always 200 for webhook stability
     if (!userId) return NextResponse.json({ ok: true });
 
-    // UltraMsg: ignore non-chat messages if present
-    const ultraType = raw?.data?.type;
-    if (provider === "ultramsg" && ultraType && ultraType !== "chat") {
-      return NextResponse.json({ ok: true });
-    }
+    // Ignore non-message events if present
+    const eventType = raw?.event_type;
+    if (eventType && eventType !== "message_received") return NextResponse.json({ ok: true });
 
     await ensureUserDoc(userId);
 
-    // Save inbound message (upsert)
+    // If voice note: transcribe and use transcript as the saved user message text
+    let userText = (text || "").trim();
+    let inboundWasVoice = false;
+
+    if (hasVoice && voiceUrl) {
+      try {
+        const transcript = await transcribeAudioFromUrl(voiceUrl);
+        if (transcript) {
+          userText = transcript;
+          inboundWasVoice = true;
+        }
+      } catch (e) {
+        console.error("Voice transcription failed:", e);
+      }
+    }
+
+    // Save inbound (ONLY transcript/text)
     await upsertMessageArray(userId, {
       id: messageId,
       role: "user",
-      text: text || "",
+      text: userText || "",
       ts: Date.now(),
       provider,
     });
 
+    // Load user
     const firestore = db();
     const userRef = firestore.collection("users").doc(userId);
     const snap = await userRef.get();
     const data = snap.data() || {};
     const profile = data.profile || {};
-    const step: string = profile.onboardingStep || "gender";
+    const step = profile.onboardingStep || "gender";
+
+    const isArabic = containsArabic(userText);
+    const wantsDetail = userRequestedDetails(userText);
 
     let reply = "";
 
-    // Block normal chat until onboarding done
-    if (step !== "done") {
+    // After onboarding: greetings allowed
+    if (step === "done" && isGreeting(userText)) {
+      reply = greetingReply(isArabic);
+    } else if (step !== "done") {
+      // Onboarding gate
       if (step === "gender") {
-        const g = normalizeGender(text);
-        if (!g) {
-          reply = Q1;
-        } else {
+        const g = normalizeGender(userText);
+        if (!g) reply = Q1;
+        else {
           await updateProfile(userId, {
             gender: g.value,
             genderLabel: g.label,
@@ -625,10 +556,9 @@ export async function POST(req: NextRequest) {
           reply = Q2;
         }
       } else if (step === "location") {
-        const loc = normalizeLocation(text);
-        if (!loc) {
-          reply = Q2;
-        } else {
+        const loc = normalizeLocation(userText);
+        if (!loc) reply = Q2;
+        else {
           await updateProfile(userId, {
             location: loc.value,
             locationLabel: loc.label,
@@ -637,103 +567,87 @@ export async function POST(req: NextRequest) {
           reply = Q3;
         }
       } else if (step === "age") {
-        const age = parseAge(text);
-        if (!age) {
-          reply = Q3;
-        } else {
-          await updateProfile(userId, {
-            age,
-            onboardingStep: "done",
-          });
+        const age = parseAge(userText);
+        if (!age) reply = Q3;
+        else {
+          await updateProfile(userId, { age, onboardingStep: "done" });
           reply = WELCOME;
         }
       } else {
-        // unknown step -> restart cleanly
         await updateProfile(userId, { onboardingStep: "gender" });
         reply = Q1;
       }
     } else {
-      // Normal "LLM-like" chat with memory from Firestore messages
-      const isArabic = containsArabic(text);
-      const wantsDetail = userRequestedDetails(text);
+      // GPT chat WITH CONTEXT
+      const LANGUAGE_ENFORCER = {
+        role: "system" as const,
+        content: isArabic
+          ? "Answer only in Arabic. Use simple, clear Modern Standard Arabic. Do not include English unless the user includes it."
+          : "Answer only in English. Use simple, clear sentences. Do not mix languages unless the user mixes them.",
+      };
 
-      // Greetings allowed (do this BEFORE off-topic)
-      if (isGreeting(text)) {
-        reply = isArabic
-          ? "أهلاً! أنا هنا لمساعدتك في أمور البلوغ والصحة الجنسية والمشاعر والعلاقات. كيف أستطيع مساعدتك اليوم؟"
-          : "Hi! I’m here to help with puberty, sexual and reproductive health, emotions, and relationships. How can I help you today?";
-      } else if (isClearlyOffTopic(text)) {
-        reply = isArabic
-          ? "أنا هنا لمساعدتك في أمور البلوغ والصحة الجنسية والمشاعر والعلاقات، لذلك لا يمكنني الإجابة على هذا السؤال."
-          : "I’m mainly here to help with puberty, sexual health, and emotions, so I can’t answer that.";
-      } else {
-        const LANGUAGE_ENFORCER = {
-          role: "system" as const,
-          content: isArabic
-            ? "Answer only in Arabic. Use simple, clear Modern Standard Arabic. Do not include English unless the user includes it."
-            : "Answer only in English. Use simple, clear sentences. Do not mix languages unless the user mixes them.",
-        };
+      const model = process.env.OPENAI_MODEL_CHAT || "gpt-4o-mini";
+      const history = getRecentHistoryForLLM(data.messages || [], 16);
 
-        const model = process.env.OPENAI_MODEL_CHAT || "gpt-4o-mini";
+      const completion = await openai.chat.completions.create({
+        model,
+        temperature: 0.5,
+        messages: [
+          { role: "system" as const, content: SYSTEM_PROMPT },
+          LANGUAGE_ENFORCER,
+          ...history,
+        ],
+      });
 
-        const history = buildHistoryForLLM((data.messages || []) as MessageItem[], 8);
+      reply =
+        completion.choices[0]?.message?.content?.trim() ||
+        (isArabic ? "عذرًا، صار في مشكلة بسيطة. جرّب مرة ثانية." : "Sorry — something went wrong. Please try again.");
 
-        const completion = await openai.chat.completions.create({
-          model,
-          temperature: 0.5,
-          messages: [
-            { role: "system" as const, content: SYSTEM_PROMPT },
-            LANGUAGE_ENFORCER,
-            ...history,
-            { role: "user" as const, content: text },
-          ],
-        });
-
-        reply =
-          completion.choices[0]?.message?.content?.trim() ||
-          "Sorry, something went wrong while answering your question.";
-
-        // Remove stray markdown symbols
-        reply = reply.replace(/[*#]/g, "");
-
-        // Short answer by default
-        if (!wantsDetail) reply = shortenToSentences(reply, 4);
-      }
+      reply = reply.replace(/[*#]/g, "");
+      if (!wantsDetail) reply = shortenToSentences(reply, 4);
     }
 
-    // Save outbound message (same doc, same "users" collection)
+    // Save outbound text
+    const assistantMsgId = `assistant_${messageId}`;
     await upsertMessageArray(userId, {
-      id: `assistant_${messageId}`,
+      id: assistantMsgId,
       role: "assistant",
       text: reply,
       ts: Date.now(),
       provider,
     });
 
-    // Respond per provider
-    if (provider === "twilio") {
-      const twiml = `<Response><Message>${escapeXml(reply)}</Message></Response>`;
-      return new NextResponse(twiml, {
-        status: 200,
-        headers: { "Content-Type": "text/xml" },
-      });
-    }
+    // Send back:
+    // - Always send text
+    // - If inbound was voice and onboarding is done => also send voice reply
+    await sendViaUltramsgText(toRaw, reply);
 
-    if (provider === "ultramsg") {
-      // UltraMsg requires sending via their API (webhook response isn't delivered to user)
-      if (toRaw) await sendViaUltramsg(toRaw, reply);
-      return NextResponse.json({ ok: true });
+    if (step === "done" && inboundWasVoice) {
+      try {
+        const voice = pickVoice(isArabic);
+        const mp3 = await ttsToMp3Buffer(reply, voice);
+
+        // TEMP upload => signed URL => send => delete
+        const { signedUrl, cleanup } = await uploadTempMp3GetSignedUrlAndDelete(
+          userId,
+          assistantMsgId,
+          mp3
+        );
+
+        try {
+          await sendViaUltramsgVoice(toRaw, signedUrl);
+        } finally {
+          await cleanup(); // delete the file no matter what
+        }
+      } catch (e) {
+        console.error("Voice reply failed (kept text reply):", e);
+      }
     }
 
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("WhatsApp webhook error:", err);
-
-    // Always 200 to avoid webhook retry storms
-    const xml = `<Response><Message>Temporary error. Please try again later.</Message></Response>`;
-    return new NextResponse(xml, {
-      status: 200,
-      headers: { "Content-Type": "text/xml" },
-    });
+    // Always 200 to avoid provider retry storms
+    return NextResponse.json({ ok: true });
   }
 }
