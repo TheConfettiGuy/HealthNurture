@@ -7,14 +7,18 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /* =========================
-   Firebase Admin
+   Firebase Admin (server)
 ========================= */
 
 function initFirebaseAdmin() {
   if (admin.apps.length) return;
 
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!json) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
+  if (!json) {
+    throw new Error(
+      "Missing FIREBASE_SERVICE_ACCOUNT_JSON (Firebase service account JSON as a single-line env var)"
+    );
+  }
 
   const serviceAccount = JSON.parse(json);
 
@@ -54,12 +58,13 @@ Main focus:
 
 Behavior:
 - If the user asks about something outside this area (for example cats, games, cars, coding, etc.), do NOT answer their question. Reply with one short sentence such as "I'm mainly here to help with puberty, sexual health, and emotions, so I can't answer that." Then stop.
+- Greetings are allowed. If the user says hi/hello/how are you, reply politely and invite a health question.
 - Do not use markdown, lists, bullets, * or #.
 - Keep responses short to medium by default (two to ten sentences) unless the question needs details or it is specific.
 - Give a longer or more detailed answer only if the user clearly asks for more detail.
 - Don't answer questions related to LGBTQ+.
-- If it asked something like this is a test, tell them you are working fine.
-- Don't include religious answers, keep it real and use facts and science if the question contained something religious.
+- If asked "is this a test?", say you're working fine.
+- Don't include religious answers, keep it factual and scientific if the question contains something religious.
 - Use the same language the user uses. If the user writes in Arabic, answer only in Arabic. If the user writes in English, answer only in English. Do not mix languages unless the user mixes them.
 
 Medication rules:
@@ -73,9 +78,7 @@ Safety:
 `;
 
 type Provider = "twilio" | "ultramsg" | "unknown";
-
-type ChatRole = "system" | "user" | "assistant";
-type ChatMessage = { role: ChatRole; content: string };
+type Role = "user" | "assistant";
 
 function containsArabic(text: string): boolean {
   return /[\u0600-\u06FF]/.test(text);
@@ -119,16 +122,94 @@ function escapeXml(unsafe: string): string {
     .replace(/'/g, "&apos;");
 }
 
-// Same “off-topic” guard as your chat route (keeps it consistent)
-function isClearlyOffTopic(text: string): boolean {
-  const lower = text.toLowerCase();
-  const bannedTopics = [
-    "cat","cats","dog","dogs","animal","animals","pet","pets",
-    "car","cars","engine","vehicle","motorcycle","bike",
-    "game","games","fortnite","minecraft","playstation","xbox","nintendo","movie","movies","series","anime",
-    "coding","programming","javascript","typescript","python","nextjs","react","computer","laptop","iphone","android",
-    "capital of","planet","galaxy","space","math","equation","physics","chemistry",
+/* =========================
+   Greetings + Off-topic guard
+========================= */
+
+function isGreeting(text: string): boolean {
+  const t = (text || "").toLowerCase().trim();
+  if (!t) return false;
+
+  const greetings = [
+    "hi",
+    "hello",
+    "hey",
+    "hey there",
+    "how are you",
+    "how r u",
+    "howru",
+    "good morning",
+    "good evening",
+    "good afternoon",
+    "مرحبا",
+    "أهلا",
+    "اهلا",
+    "هلا",
+    "كيفك",
+    "كيف حالك",
+    "صباح الخير",
+    "مساء الخير",
   ];
+
+  return greetings.some((g) => t === g || t.startsWith(g));
+}
+
+// Keep this for real off-topic ONLY. Do NOT include greetings here.
+function isClearlyOffTopic(text: string): boolean {
+  const lower = (text || "").toLowerCase();
+
+  const bannedTopics = [
+    // animals / pets
+    "cat",
+    "cats",
+    "dog",
+    "dogs",
+    "animal",
+    "animals",
+    "pet",
+    "pets",
+    // vehicles
+    "car",
+    "cars",
+    "engine",
+    "vehicle",
+    "motorcycle",
+    "bike",
+    // games / entertainment
+    "game",
+    "games",
+    "fortnite",
+    "minecraft",
+    "playstation",
+    "xbox",
+    "nintendo",
+    "movie",
+    "movies",
+    "series",
+    "anime",
+    // coding / tech
+    "coding",
+    "programming",
+    "javascript",
+    "typescript",
+    "python",
+    "nextjs",
+    "react",
+    "computer",
+    "laptop",
+    "iphone",
+    "android",
+    // general knowledge
+    "capital of",
+    "planet",
+    "galaxy",
+    "space",
+    "math",
+    "equation",
+    "physics",
+    "chemistry",
+  ];
+
   return bannedTopics.some((w) => lower.includes(w));
 }
 
@@ -168,17 +249,36 @@ const WELCOME =
   `أهلاً بك في هيلث نيرتشر، يمكنك سؤالي عن البلوغ، الصحة الجنسية، والمشاعر والعلاقات.`;
 
 /* =========================
-   Number parsing (fixes "٥" etc.)
+   Number parsing (accept "٥" etc.)
 ========================= */
 
 function toLatinDigits(input: string) {
   const map: Record<string, string> = {
-    "٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9",
-    "۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9",
+    "٠": "0",
+    "١": "1",
+    "٢": "2",
+    "٣": "3",
+    "٤": "4",
+    "٥": "5",
+    "٦": "6",
+    "٧": "7",
+    "٨": "8",
+    "٩": "9",
+    "۰": "0",
+    "۱": "1",
+    "۲": "2",
+    "۳": "3",
+    "۴": "4",
+    "۵": "5",
+    "۶": "6",
+    "۷": "7",
+    "۸": "8",
+    "۹": "9",
   };
   return (input || "").replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
 }
 
+// Accept 5, "5️⃣", " 5 ", "option 5", etc.
 function parseChoice(input: string): number | null {
   const t = toLatinDigits((input || "").trim()).replace(/[^\d]/g, "");
   if (!t) return null;
@@ -190,7 +290,9 @@ function parseChoice(input: string): number | null {
    Normalization (store real answers)
 ========================= */
 
-function normalizeGender(input: string): { value: "male" | "female"; label: string } | null {
+function normalizeGender(
+  input: string
+): { value: "male" | "female"; label: string } | null {
   const t = toLatinDigits(input).trim().toLowerCase();
   const n = parseChoice(t);
 
@@ -203,7 +305,9 @@ function normalizeGender(input: string): { value: "male" | "female"; label: stri
   return null;
 }
 
-function normalizeLocation(input: string): { value: string; label: string } | null {
+function normalizeLocation(
+  input: string
+): { value: string; label: string } | null {
   const t = toLatinDigits(input).trim().toLowerCase();
   const n = parseChoice(t);
 
@@ -220,14 +324,23 @@ function normalizeLocation(input: string): { value: string; label: string } | nu
   const byText: Record<string, { value: string; label: string }> = {
     "bekkaa": { value: "bekkaa", label: "Bekkaa/البقاع" },
     "البقاع": { value: "bekkaa", label: "Bekkaa/البقاع" },
+    "bekkaa/البقاع": { value: "bekkaa", label: "Bekkaa/البقاع" },
+
     "tripoli": { value: "tripoli", label: "Tripoli/طرابلس" },
     "طرابلس": { value: "tripoli", label: "Tripoli/طرابلس" },
+    "tripoli/طرابلس": { value: "tripoli", label: "Tripoli/طرابلس" },
+
     "akkar": { value: "akkar", label: "Akkar/عكار" },
     "عكار": { value: "akkar", label: "Akkar/عكار" },
+    "akkar/عكار": { value: "akkar", label: "Akkar/عكار" },
+
     "baalbek": { value: "baalbek", label: "Baalbek/بعلبك" },
     "بعلبك": { value: "baalbek", label: "Baalbek/بعلبك" },
+    "baalbek/بعلبك": { value: "baalbek", label: "Baalbek/بعلبك" },
+
     "beirut": { value: "beirut", label: "Beirut/بيروت" },
     "بيروت": { value: "beirut", label: "Beirut/بيروت" },
+    "beirut/بيروت": { value: "beirut", label: "Beirut/بيروت" },
   };
 
   return byText[t] ?? null;
@@ -246,34 +359,43 @@ function parseAge(input: string): number | null {
 ========================= */
 
 function extractDigitsPhone(value: string): string {
+  // "96170062123@c.us" -> "96170062123"
   return (value || "").replace(/[^\d]/g, "");
 }
 
 async function parseIncoming(req: NextRequest): Promise<{
   provider: Provider;
-  userId: string;        // digits only
-  toRaw: string;         // UltraMsg destination = fromRaw (9617...@c.us)
+  userId: string; // digits only (Firestore doc id)
+  toRaw: string; // UltraMsg "from" (e.g. 9617...@c.us) for sending replies
   text: string;
   messageId: string;
   raw: any;
-  contentType: string;
 }> {
   const contentType = req.headers.get("content-type") || "";
 
+  // UltraMsg JSON webhook
   if (contentType.includes("application/json")) {
     const raw = await req.json().catch(() => ({}));
+
+    // UltraMsg webhook format you showed:
+    // { event_type, instanceId, hash, data: { from, body, sid, ... } }
     const msg = raw?.data ?? raw;
 
     const text = (msg?.body || "").toString().trim();
     const fromRaw = (msg?.from || "").toString(); // 9617...@c.us
     const userId = extractDigitsPhone(fromRaw);
 
-    const messageId =
-      (msg?.sid || msg?.id || raw?.hash || `${userId}_${Date.now()}`).toString();
+    const messageId = (
+      msg?.sid ||
+      msg?.id ||
+      raw?.hash ||
+      `${userId}_${Date.now()}`
+    ).toString();
 
-    return { provider: "ultramsg", userId, toRaw: fromRaw, text, messageId, raw, contentType };
+    return { provider: "ultramsg", userId, toRaw: fromRaw, text, messageId, raw };
   }
 
+  // Twilio x-www-form-urlencoded
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const textBody = await req.text();
     const raw = Object.fromEntries(new URLSearchParams(textBody));
@@ -287,10 +409,10 @@ async function parseIncoming(req: NextRequest): Promise<{
       text,
       messageId: (raw.MessageSid || raw.SmsMessageSid || `${Date.now()}`).toString(),
       raw,
-      contentType,
     };
   }
 
+  // Twilio multipart/form-data
   if (contentType.includes("multipart/form-data")) {
     const fd = await req.formData();
     const rawObj: Record<string, any> = {};
@@ -306,11 +428,10 @@ async function parseIncoming(req: NextRequest): Promise<{
       text,
       messageId: (rawObj.MessageSid || rawObj.SmsMessageSid || `${Date.now()}`).toString(),
       raw: rawObj,
-      contentType,
     };
   }
 
-  return { provider: "unknown", userId: "", toRaw: "", text: "", messageId: "", raw: {}, contentType };
+  return { provider: "unknown", userId: "", toRaw: "", text: "", messageId: "", raw: {} };
 }
 
 /* =========================
@@ -320,7 +441,9 @@ async function parseIncoming(req: NextRequest): Promise<{
 async function sendViaUltramsg(to: string, message: string) {
   const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
   const token = process.env.ULTRAMSG_TOKEN;
-  if (!instanceId || !token) throw new Error("Missing ULTRAMSG_INSTANCE_ID/ULTRAMSG_TOKEN");
+  if (!instanceId || !token) {
+    throw new Error("Missing ULTRAMSG_INSTANCE_ID / ULTRAMSG_TOKEN");
+  }
 
   const url = `https://api.ultramsg.com/${instanceId}/messages/chat`;
 
@@ -336,28 +459,24 @@ async function sendViaUltramsg(to: string, message: string) {
     body,
   });
 
-  const text = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`UltraMsg send failed: ${res.status} ${text}`);
-  return text;
+  const txt = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`UltraMsg send failed: ${res.status} ${txt}`);
+  return txt;
 }
 
 /* =========================
    Firestore: ONE collection "users"
-   ONE doc per userId
-   messages[] array updated + sorted
+   One doc per userId (phone digits)
+   messages: array that upserts by messageId
 ========================= */
 
-type MessageKind = "chat" | "onboarding" | "system";
-type StoredMessage = {
-  id: string;
-  role: "user" | "assistant";
+type MessageItem = {
+  id: string; // messageId
+  role: Role;
   text: string;
   ts: number;
   provider: Provider;
-  kind: MessageKind;
 };
-
-const HISTORY_LIMIT = 24; // last N chat messages to send to LLM
 
 async function ensureUserDoc(userId: string) {
   const firestore = db();
@@ -369,7 +488,7 @@ async function ensureUserDoc(userId: string) {
     await ref.set({
       profile: {
         userId,
-        onboardingStep: "gender",
+        onboardingStep: "gender", // gender -> location -> age -> done
         createdAt: now,
         updatedAt: now,
       },
@@ -383,6 +502,7 @@ async function updateProfile(userId: string, patch: Record<string, any>) {
   const firestore = db();
   const ref = firestore.collection("users").doc(userId);
   const now = admin.firestore.FieldValue.serverTimestamp();
+
   await ref.set(
     {
       profile: {
@@ -395,8 +515,8 @@ async function updateProfile(userId: string, patch: Record<string, any>) {
   );
 }
 
-// Upsert by id, keep chronological, cap size
-async function upsertMessageArray(userId: string, message: StoredMessage) {
+// Upsert into messages array by id (keeps one array, one doc)
+async function upsertMessageArray(userId: string, message: MessageItem) {
   const firestore = db();
   const ref = firestore.collection("users").doc(userId);
 
@@ -405,7 +525,7 @@ async function upsertMessageArray(userId: string, message: StoredMessage) {
     const now = admin.firestore.FieldValue.serverTimestamp();
 
     const data = snap.exists ? (snap.data() || {}) : {};
-    const messages: StoredMessage[] = Array.isArray(data.messages) ? data.messages : [];
+    const messages: MessageItem[] = Array.isArray(data.messages) ? data.messages : [];
     const profile = data.profile || {};
 
     if (!snap.exists) {
@@ -429,25 +549,28 @@ async function upsertMessageArray(userId: string, message: StoredMessage) {
       messages.push(message);
     }
 
-    // Sort by ts then cap (keep most recent)
+    // Ensure chronological order by ts (stable)
     messages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    const capped = messages.length > 500 ? messages.slice(-500) : messages;
 
-    tx.set(ref, { messages: capped, updatedAt: now }, { merge: true });
+    tx.set(ref, { messages, updatedAt: now }, { merge: true });
   });
 }
 
-function buildHistoryForLLM(allMessages: StoredMessage[]): ChatMessage[] {
-  // only "chat" messages (NOT onboarding prompts), and only non-empty
-  const chatMsgs = (allMessages || [])
-    .filter((m) => m && m.kind === "chat" && typeof m.text === "string" && m.text.trim().length > 0)
-    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
-    .slice(-HISTORY_LIMIT);
+/* =========================
+   Build GPT history from Firestore
+   (makes WhatsApp bot "remember" context)
+========================= */
 
-  return chatMsgs.map((m) => ({
-    role: m.role,
-    content: m.text,
-  }));
+function buildHistoryForLLM(messages: MessageItem[], limitPairs = 8) {
+  // Keep last N user/assistant turns (pairs -> about 16 messages max)
+  const tail = (messages || []).slice(-limitPairs * 2);
+
+  return tail
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && m.text)
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.text,
+    }));
 }
 
 /* =========================
@@ -458,10 +581,10 @@ export async function POST(req: NextRequest) {
   try {
     const { provider, userId, toRaw, text, messageId, raw } = await parseIncoming(req);
 
-    // Always return 200 to avoid provider retry storms
+    // Always 200 for webhook stability
     if (!userId) return NextResponse.json({ ok: true });
 
-    // UltraMsg: ignore non-chat events
+    // UltraMsg: ignore non-chat messages if present
     const ultraType = raw?.data?.type;
     if (provider === "ultramsg" && ultraType && ultraType !== "chat") {
       return NextResponse.json({ ok: true });
@@ -469,32 +592,26 @@ export async function POST(req: NextRequest) {
 
     await ensureUserDoc(userId);
 
-    // Save inbound user message (as chat if onboarding done, otherwise kind onboarding still ok)
-    // We'll decide kind after we read profile, but we can temporarily store as chat then adjust — simpler:
-    // We'll store inbound as "chat" ALWAYS (so the user's actual text is preserved).
+    // Save inbound message (upsert)
     await upsertMessageArray(userId, {
       id: messageId,
       role: "user",
       text: text || "",
       ts: Date.now(),
       provider,
-      kind: "chat",
     });
 
-    // Load user doc
     const firestore = db();
     const userRef = firestore.collection("users").doc(userId);
     const snap = await userRef.get();
     const data = snap.data() || {};
     const profile = data.profile || {};
     const step: string = profile.onboardingStep || "gender";
-    const allMessages: StoredMessage[] = Array.isArray(data.messages) ? data.messages : [];
 
     let reply = "";
 
-    // Block chatting until onboarding done
+    // Block normal chat until onboarding done
     if (step !== "done") {
-      // Mark outbound as onboarding kind (keeps LLM history clean)
       if (step === "gender") {
         const g = normalizeGender(text);
         if (!g) {
@@ -531,82 +648,66 @@ export async function POST(req: NextRequest) {
           reply = WELCOME;
         }
       } else {
+        // unknown step -> restart cleanly
         await updateProfile(userId, { onboardingStep: "gender" });
         reply = Q1;
       }
-
-      const assistantMsgId = `assistant_${messageId}`;
-      await upsertMessageArray(userId, {
-        id: assistantMsgId,
-        role: "assistant",
-        text: reply,
-        ts: Date.now(),
-        provider,
-        kind: "onboarding",
-      });
-
-      if (provider === "twilio") {
-        const twiml = `<Response><Message>${escapeXml(reply)}</Message></Response>`;
-        return new NextResponse(twiml, { status: 200, headers: { "Content-Type": "text/xml" } });
-      }
-      if (provider === "ultramsg") {
-        if (toRaw) await sendViaUltramsg(toRaw, reply);
-        return NextResponse.json({ ok: true });
-      }
-      return NextResponse.json({ ok: true });
-    }
-
-    // ===== Normal GPT chat (WITH HISTORY) =====
-
-    const isArabic = containsArabic(text);
-    const wantsDetail = userRequestedDetails(text);
-
-    // Hard off-topic guard
-    if (isClearlyOffTopic(text)) {
-      reply = isArabic
-        ? "أنا هنا لمساعدتك في أمور البلوغ والصحة الجنسية والمشاعر والعلاقات، لذلك لا يمكنني الإجابة على هذا السؤال."
-        : "I am here to help with puberty, sexual and reproductive health, emotions and relationships, so I cannot answer that question.";
     } else {
-      const LANGUAGE_ENFORCER: ChatMessage = {
-        role: "system",
-        content: isArabic
-          ? "Answer only in Arabic. Use simple, clear Modern Standard Arabic. Do not include English unless the user includes it."
-          : "Answer only in English. Use simple, clear sentences. Do not mix languages unless the user mixes them.",
-      };
+      // Normal "LLM-like" chat with memory from Firestore messages
+      const isArabic = containsArabic(text);
+      const wantsDetail = userRequestedDetails(text);
 
-      const history = buildHistoryForLLM(allMessages);
+      // Greetings allowed (do this BEFORE off-topic)
+      if (isGreeting(text)) {
+        reply = isArabic
+          ? "أهلاً! أنا هنا لمساعدتك في أمور البلوغ والصحة الجنسية والمشاعر والعلاقات. كيف أستطيع مساعدتك اليوم؟"
+          : "Hi! I’m here to help with puberty, sexual and reproductive health, emotions, and relationships. How can I help you today?";
+      } else if (isClearlyOffTopic(text)) {
+        reply = isArabic
+          ? "أنا هنا لمساعدتك في أمور البلوغ والصحة الجنسية والمشاعر والعلاقات، لذلك لا يمكنني الإجابة على هذا السؤال."
+          : "I’m mainly here to help with puberty, sexual health, and emotions, so I can’t answer that.";
+      } else {
+        const LANGUAGE_ENFORCER = {
+          role: "system" as const,
+          content: isArabic
+            ? "Answer only in Arabic. Use simple, clear Modern Standard Arabic. Do not include English unless the user includes it."
+            : "Answer only in English. Use simple, clear sentences. Do not mix languages unless the user mixes them.",
+        };
 
-      const model = process.env.OPENAI_MODEL_CHAT || "gpt-4o-mini";
+        const model = process.env.OPENAI_MODEL_CHAT || "gpt-4o-mini";
 
-      const completion = await openai.chat.completions.create({
-        model,
-        temperature: 0.5,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          LANGUAGE_ENFORCER,
-          ...history,
-          // Ensure the current user message is definitely last (even if history already includes it)
-          { role: "user", content: text },
-        ],
-      });
+        const history = buildHistoryForLLM((data.messages || []) as MessageItem[], 8);
 
-      reply =
-        completion.choices[0]?.message?.content?.trim() ||
-        (isArabic ? "عذراً، حدث خطأ مؤقت." : "Sorry, a temporary error occurred.");
+        const completion = await openai.chat.completions.create({
+          model,
+          temperature: 0.5,
+          messages: [
+            { role: "system" as const, content: SYSTEM_PROMPT },
+            LANGUAGE_ENFORCER,
+            ...history,
+            { role: "user" as const, content: text },
+          ],
+        });
 
-      reply = reply.replace(/[*#]/g, "");
-      if (!wantsDetail) reply = shortenToSentences(reply, 4);
+        reply =
+          completion.choices[0]?.message?.content?.trim() ||
+          "Sorry, something went wrong while answering your question.";
+
+        // Remove stray markdown symbols
+        reply = reply.replace(/[*#]/g, "");
+
+        // Short answer by default
+        if (!wantsDetail) reply = shortenToSentences(reply, 4);
+      }
     }
 
-    // Save assistant reply as chat kind
-    const assistantMsgId = `assistant_${messageId}`;
+    // Save outbound message (same doc, same "users" collection)
     await upsertMessageArray(userId, {
-      id: assistantMsgId,
+      id: `assistant_${messageId}`,
       role: "assistant",
       text: reply,
       ts: Date.now(),
       provider,
-      kind: "chat",
     });
 
     // Respond per provider
@@ -619,6 +720,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (provider === "ultramsg") {
+      // UltraMsg requires sending via their API (webhook response isn't delivered to user)
       if (toRaw) await sendViaUltramsg(toRaw, reply);
       return NextResponse.json({ ok: true });
     }
@@ -626,7 +728,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("WhatsApp webhook error:", err);
+
+    // Always 200 to avoid webhook retry storms
     const xml = `<Response><Message>Temporary error. Please try again later.</Message></Response>`;
-    return new NextResponse(xml, { status: 200, headers: { "Content-Type": "text/xml" } });
+    return new NextResponse(xml, {
+      status: 200,
+      headers: { "Content-Type": "text/xml" },
+    });
   }
 }
